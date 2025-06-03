@@ -1,0 +1,4 @@
+Total:  106054011
+Trainable:  22400148
+===> Start Epoch 1 End Epoch 11
+===> Loading datasets

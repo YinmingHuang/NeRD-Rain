@@ -19,20 +19,41 @@ def save_checkpoint(model_dir, state, session):
     model_out_path = os.path.join(model_dir,"model_epoch_{}_{}.pth".format(epoch,session))
     torch.save(state, model_out_path)
 
-def load_checkpoint(model, weights):
-    checkpoint = torch.load(weights)
-    # print(checkpoint)
-    try:
-        model.load_state_dict(checkpoint["state_dict"])
-    except:
-        state_dict = checkpoint["state_dict"]
-        new_state_dict = OrderedDict()
-        for k, v in state_dict.items():
-            # print(k)
-            name = k[7:] # remove `module.`
-            new_state_dict[name] = v
+def remove_module_prefix(state_dict):
+    from collections import OrderedDict
+    new_state_dict = OrderedDict()
+    for k, v in state_dict.items():
+        if k.startswith('module.'):
+            new_state_dict[k[7:]] = v
+        else:
+            new_state_dict[k] = v
+    return new_state_dict
 
-        model.load_state_dict(new_state_dict)
+
+def load_checkpoint(model, weights):
+    # checkpoint = torch.load(weights)
+    # checkpoint = torch.load(weights, map_location='cuda:0')
+    
+    ckpt = torch.load(weights, map_location='cuda:0')
+    if 'state_dict' in ckpt:
+        state_dict = ckpt['state_dict']
+    else:
+        state_dict = ckpt
+    state_dict = remove_module_prefix(state_dict)
+    model.load_state_dict(state_dict, strict=False)
+
+    # print(checkpoint)
+    # try:
+    #     model.load_state_dict(checkpoint["state_dict"])
+    # except:
+    #     state_dict = checkpoint["state_dict"]
+    #     new_state_dict = OrderedDict()
+    #     for k, v in state_dict.items():
+    #         # print(k)
+    #         name = k[7:] # remove `module.`
+    #         new_state_dict[name] = v
+
+    #     model.load_state_dict(new_state_dict)
 
 
 def load_checkpoint_compress_doconv(model, weights):

@@ -13,9 +13,9 @@ from tqdm import tqdm
 from layers import *
 
 parser = argparse.ArgumentParser(description='Image Deraining')
-parser.add_argument('--input_dir', default='/data0/chenxiang/code/CVPR2024/Datasets/Rain200L/test/input/', type=str, help='Directory of validation images')
-parser.add_argument('--output_dir', default='./results/Rain200L', type=str, help='Directory of validation images')
-parser.add_argument('--weights', default='', type=str, help='Path to weights') 
+parser.add_argument('--input_dir', default='/home/t2vg-a100-G4-42/v-shuyuantu/NeRD-Rain/Datasets/Rain200L/test/input/Rain200L-testset', type=str, help='Directory of validation images')
+parser.add_argument('--output_dir', default='./results/mynewnewtestresults', type=str, help='Directory of validation images')
+parser.add_argument('--weights', default='/home/t2vg-a100-G4-42/v-shuyuantu/NeRD-Rain/checkpoints/Deraininig/models/Multiscale/model_epoch_10.pth', type=str, help='Path to weights') 
 parser.add_argument('--gpus', default='0', type=str, help='CUDA_VISIBLE_DEVICES')
 parser.add_argument('--win_size', default=256, type=int, help='window size')
 args = parser.parse_args()
@@ -26,7 +26,7 @@ os.environ["CUDA_VISIBLE_DEVICES"] = args.gpus
 model_restoration = mynet()
 get_parameter_number(model_restoration)
 utils.load_checkpoint(model_restoration, args.weights)
-print("===>Testing using weights: ",args.weights)
+# print("===>Testing using weights: ",args.weights)
 model_restoration.cuda()
 model_restoration = nn.DataParallel(model_restoration)
 model_restoration.eval()

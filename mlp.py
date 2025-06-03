@@ -52,7 +52,7 @@ class INR(nn.Module):
         if self.cell_decode:
             imnet_in_dim += 2
 
-        self.imnet = MLP(imnet_in_dim, 3, hidden_list)
+        self.imnet = MLP(imnet_in_dim, 4, hidden_list)
 
     def query_rgb(self, inp, coord, cell=None):
         feat = inp

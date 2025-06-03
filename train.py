@@ -1,7 +1,7 @@
 import os
 
 os.environ["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
-os.environ["CUDA_VISIBLE_DEVICES"] = '0'
+os.environ["CUDA_VISIBLE_DEVICES"] = '0,1,2,3'
 
 import torch
 
@@ -17,7 +17,7 @@ import numpy as np
 
 import utils
 from data_RGB import get_training_data, get_validation_data
-from model import MultiscaleNet as myNet
+from model_my import MultiscaleNet as myNet
 #from model_S import MultiscaleNet as myNet
 import losses
 from warmup_scheduler import GradualWarmupScheduler
@@ -26,29 +26,30 @@ from get_parameter_number import get_parameter_number
 import kornia
 from torch.utils.tensorboard import SummaryWriter
 import argparse
-
+from accelerate import Accelerator
 from skimage import img_as_ubyte
+from torch.nn.parallel import DistributedDataParallel as DDP
 
 ######### Set Seeds ###########
 random.seed(1234)
 np.random.seed(1234)
 torch.manual_seed(1234)
-torch.cuda.manual_seed_all(1234)
-
+# torch.cuda.manual_seed_all(1234)
+accelerator = Accelerator()
 start_epoch = 1
 
 parser = argparse.ArgumentParser(description='Image Deraininig')
 
-parser.add_argument('--train_dir', default='/data0/chenxiang/code/CVPR2024/Datasets/Rain200L/train/', type=str, help='Directory of train images')
-parser.add_argument('--val_dir', default='/data0/chenxiang/code/CVPR2024/Datasets/Rain200L/test/', type=str, help='Directory of validation images')
-parser.add_argument('--model_save_dir', default='/data0/chenxiang/code/CVPR2024/checkpoints/', type=str, help='Path to save weights')
+parser.add_argument('--train_dir', default='/home/t2vg-a100-G4-42/v-shuyuantu/NeRD-Rain/Datasets/4combine-481x321/train', type=str, help='Directory of train images')
+parser.add_argument('--val_dir', default='/home/t2vg-a100-G4-42/v-shuyuantu/NeRD-Rain/Datasets/4combine-481x321/test', type=str, help='Directory of validation images')
+parser.add_argument('--model_save_dir', default='/home/t2vg-a100-G4-42/v-shuyuantu/NeRD-Rain/new_checkpoints/', type=str, help='Path to save weights')
 parser.add_argument('--pretrain_weights', default='', type=str, help='Path to pretrain-weights')
 parser.add_argument('--mode', default='Deraininig', type=str)
 parser.add_argument('--session', default='Multiscale', type=str, help='session')
 parser.add_argument('--patch_size', default=256, type=int, help='patch size')
-parser.add_argument('--num_epochs', default=3000, type=int, help='num_epochs')
-parser.add_argument('--batch_size', default=1, type=int, help='batch_size')
-parser.add_argument('--val_epochs', default=1, type=int, help='val_epochs')
+parser.add_argument('--num_epochs', default=100, type=int, help='num_epochs')
+parser.add_argument('--batch_size', default=16, type=int, help='batch_size')
+parser.add_argument('--val_epochs', default=10, type=int, help='val_epochs')
 args = parser.parse_args()
 
 mode = args.mode
@@ -74,12 +75,7 @@ model_restoration = myNet()
 # print number of model
 get_parameter_number(model_restoration)
 
-model_restoration.cuda()
-
-device_ids = [i for i in range(torch.cuda.device_count())]
-if torch.cuda.device_count() > 1:
-    print("\n\nLet's use", torch.cuda.device_count(), "GPUs!\n\n")
-
+# Remove the manual DDP wrapping - let Accelerator handle it
 optimizer = optim.Adam(model_restoration.parameters(), lr=start_lr, betas=(0.9, 0.999), eps=1e-8)
 
 ######### Scheduler ###########
@@ -113,9 +109,6 @@ if RESUME:
     print("==> Resuming Training with learning rate:", new_lr)
     print('------------------------------------------------------------------------------')
 
-if len(device_ids) > 1:
-    model_restoration = nn.DataParallel(model_restoration, device_ids=device_ids)
-
 ######### Loss ###########
 criterion_char = losses.CharbonnierLoss()
 criterion_edge = losses.EdgeLoss()
@@ -124,12 +117,17 @@ criterion_L1 = nn.L1Loss(size_average=True)
 
 ######### DataLoaders ###########
 train_dataset = get_training_data(train_dir, {'patch_size': patch_size})
-train_loader = DataLoader(dataset=train_dataset, batch_size=batch_size, shuffle=True, num_workers=0, drop_last=False,
+train_loader = DataLoader(dataset=train_dataset, batch_size=batch_size, shuffle=True, num_workers=8, drop_last=False,
                           pin_memory=True)
 
 val_dataset = get_validation_data(val_dir, {'patch_size': patch_size})
-val_loader = DataLoader(dataset=val_dataset, batch_size=1, shuffle=False, num_workers=0, drop_last=False,
+val_loader = DataLoader(dataset=val_dataset, batch_size=1, shuffle=False, num_workers=8, drop_last=False,
                         pin_memory=True)
+
+# Move the accelerator.prepare() call here, before any model usage
+model_restoration, optimizer, train_loader, val_loader = accelerator.prepare(
+    model_restoration, optimizer, train_loader, val_loader
+)
 
 print('===> Start Epoch {} End Epoch {}'.format(start_epoch, num_epochs + 1))
 print('===> Loading datasets')
@@ -151,17 +149,51 @@ for epoch in range(start_epoch, num_epochs + 1):
         for param in model_restoration.parameters():
             param.grad = None
 
-        target_ = data[0].cuda()
-        input_ = data[1].cuda()
+        target_ = data[0] #.cuda()
+        input_ = data[1] #.cuda()
+        device = input_.device
         target = kornia.geometry.transform.build_pyramid(target_, 3)
+        target = [t.to(device) for t in target]
         restored = model_restoration(input_)
 
-        loss_fft = criterion_fft(restored[0], target[0]) + criterion_fft(restored[1], target[1]) + criterion_fft(restored[2], target[2])
-        loss_char = criterion_char(restored[0], target[0]) + criterion_char(restored[1], target[1]) + criterion_char(restored[2], target[2])
-        loss_edge = criterion_edge(restored[0], target[0]) + criterion_edge(restored[1], target[1]) + criterion_edge(restored[2], target[2])
-        loss_l1 = criterion_L1(restored[3], target[1]) + criterion_L1(restored[5], target[2])
+        device = input_.device  # 一般是 accelerator.prepare 后 input_ 所在的 device
+
+        loss_fft = (
+            criterion_fft(restored[0], target[0]) +
+            criterion_fft(restored[1], target[1]) +
+            criterion_fft(restored[2], target[2])
+        ).to(device)
+
+        loss_char = (
+            criterion_char(restored[0], target[0]) +
+            criterion_char(restored[1], target[1]) +
+            criterion_char(restored[2], target[2])
+        ).to(device)
+
+        loss_edge = (
+            criterion_edge(restored[0], target[0]) +
+            criterion_edge(restored[1], target[1]) +
+            criterion_edge(restored[2], target[2])
+        ).to(device)
+
+        loss_l1 = (
+            criterion_L1(restored[3], target[1]) +
+            criterion_L1(restored[5], target[2])
+        ).to(device)
         loss = loss_char + 0.01 * loss_fft + 0.05 * loss_edge + 0.1 * loss_l1
-        loss.backward()
+        
+        # ====== 关键加这里 ======
+        dummy_loss = 0
+        for x in restored:
+            dummy_loss += (x.sum() * 0)
+        loss = loss + dummy_loss
+        
+        for name, param in model_restoration.named_parameters():
+            if param.requires_grad:
+                loss = loss + 0.0 * param.sum()
+        # ====== 到这里 ======
+        # loss.backward()
+        accelerator.backward(loss)
         optimizer.step()
         epoch_loss += loss.item()
         iter += 1
@@ -176,8 +208,8 @@ for epoch in range(start_epoch, num_epochs + 1):
         model_restoration.eval()
         psnr_val_rgb = []
         for ii, data_val in enumerate((val_loader), 0):
-            target = data_val[0].cuda()
-            input_ = data_val[1].cuda()
+            target = data_val[0] #.cuda()
+            input_ = data_val[1] #.cuda()
 
             with torch.no_grad():
                 restored = model_restoration(input_)
@@ -205,8 +237,7 @@ for epoch in range(start_epoch, num_epochs + 1):
     scheduler.step()
 
     print("------------------------------------------------------------------")
-    print("Epoch: {}\tTime: {:.4f}\tLoss: {:.4f}\tLearningRate {:.6f}".format(epoch, time.time() - epoch_start_time,
-                                                                              epoch_loss, scheduler.get_lr()[0]))
+    print("Epoch: {}\tTime: {:.4f}\tLoss: {:.4f}\tLearningRate {:.6f}".format(epoch, time.time() - epoch_start_time,epoch_loss, scheduler.get_lr()[0]))
     print("------------------------------------------------------------------")
 
     torch.save({'epoch': epoch,

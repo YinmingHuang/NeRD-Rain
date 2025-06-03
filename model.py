@@ -4,7 +4,7 @@ from torch.nn import functional as F
 import numbers
 from einops import rearrange
 from mlp import INR
-
+from diffusers import AutoencoderKL
 
 def to_3d(x):
     return rearrange(x, 'b c h w -> b (h w) c')
@@ -232,14 +232,15 @@ class Fusion(nn.Module):
 
 class MultiscaleNet(nn.Module):
     def __init__(self,
-                 inp_channels=3,
-                 out_channels=3,
+                 inp_channels=4,
+                 out_channels=4,
                  dim=48,
                  num_blocks=[2, 3, 3],
                  heads=[1, 2, 4],
                  ffn_expansion_factor=2.66,
                  bias=False,
                  LayerNorm_type='WithBias',
+                 pretrained_vae_name_or_path="stabilityai/sd-vae-ft-mse"
                  ):
         super(MultiscaleNet, self).__init__()
         self.patch_embed_small = OverlapPatchEmbed(inp_channels, dim)
@@ -412,10 +413,13 @@ class MultiscaleNet(nn.Module):
 
         self.upmid2max1 = Upsample(int(dim * 4 ** 1))
         self.upmid2max2 = Upsample(int(dim * 2 ** 1))
+        
+        self.vae = AutoencoderKL.from_pretrained(pretrained_vae_name_or_path)
 
     def forward(self, inp_img):
         outputs = list()
-
+        vae_out = self.vae.encode(inp_img)
+        inp_img = vae_out.latent_dist.sample()    # 或 .mean
         inp_img_max = inp_img
         inp_img_mid = F.interpolate(inp_img, scale_factor=0.5)
         inp_img_small = F.interpolate(inp_img, scale_factor=0.25)
@@ -599,4 +603,11 @@ class MultiscaleNet(nn.Module):
 
         outputs.append(out_dec_level1_max)
 
-        return outputs[::-1]
+        # 最后对所有输出进行VAE解码
+        decoded_outputs = []
+        for output in outputs[::-1]:  # 已经反转的输出列表
+            decoded = self.vae.decode(output).sample
+            decoded_outputs.append(decoded)
+
+        return decoded_outputs
+
